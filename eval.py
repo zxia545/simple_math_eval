@@ -4,9 +4,10 @@ from openai import OpenAI
 import argparse
 import os
 import tqdm
-import multiprocessing
 import time
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+
 
 
 
@@ -34,16 +35,8 @@ Please do the following:
     
 
 
-def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=0.7):
-    win_counter = 0
-    
-    data_list = read_jsonl(path_to_jsonl)
-    total_counter = len(data_list)
-    file_name = os.path.splitext(os.path.basename(path_to_jsonl))[0]
-    output_list = []
-    output_file = os.path.join("eval_results", file_name + "_eval.jsonl")
-    
-    for data_item in data_list:
+def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=0.7, threads=10):
+    def process_data(data_item, api_base, model_name, max_tokens=256, temperature=0.7):
         reference_answer = data_item.get("answer")
         llm_answer = data_item.get("llm_answer")
         question = data_item.get("question")
@@ -58,9 +51,26 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
         response = chat_completion(api_base=api_base, model_name=model_name, messages=this_message, max_tokens=max_tokens, temperature=temperature)
         
         is_correct = scorer(response)
-        win_counter += int(is_correct)
-        output_list.append({"question": question, "llm_answer": llm_answer, "reference_answer": reference_answer, "eval_feedback": response, "eval_result": is_correct})
+        
+        return {"question": question, "llm_answer": llm_answer, "reference_answer": reference_answer, "eval_feedback": response, "eval_result": is_correct}
     
+    win_counter = 0
+    
+    data_list = read_jsonl(path_to_jsonl)
+    total_counter = len(data_list)
+    file_name = os.path.splitext(os.path.basename(path_to_jsonl))[0]
+    output_list = []
+    output_file = os.path.join("eval_results", file_name + "_eval.jsonl")
+    
+    
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = [executor.submit(process_data, data_item, api_base, model_name, max_tokens, temperature) for data_item in data_list]
+        for i, future in enumerate(futures, start=1):
+            result_json = future.result()
+            is_correct = result_json.get("eval_result")
+            win_counter += int(is_correct)
+            output_list.append(result_json)
+   
     write_jsonl(output_file, output_list)
     print(f'[INFO] Evaluation results have been saved to {output_file}')
     print(f'[INFO] Acc: {win_counter/total_counter*100}% ')
@@ -75,6 +85,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None, help='Path to the model')
     parser.add_argument('--port', type=int, default=8000, help='Port')
     parser.add_argument('--gpu', type=int, default=1, help='GPU')
+    parser.add_argument('--threads', type=int, default=10, help='Threads')
     
     args = parser.parse_args()
     
@@ -82,8 +93,8 @@ if __name__ == "__main__":
     if args.model_path:
         process_id = start_vllm_server(args.model_path, args.model_name, args.port, args.gpu)
         for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature)
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads)
         stop_vllm_server(process_id)
     else:
         for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature)
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads)
