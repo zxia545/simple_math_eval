@@ -88,16 +88,16 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=8000, help='Port')
     parser.add_argument('--gpu', type=int, default=1, help='GPU')
     parser.add_argument('--threads', type=int, default=10, help='Threads')
-    parser.add_argument('--output_file', type=str, default=None, help='Output file')
+    parser.add_argument('--output_file_list', type=list, default=None, help='Output file')
     
     args = parser.parse_args()
     
     
     if args.model_path:
         process_id = start_vllm_server(args.model_path, args.model_name, args.port, args.gpu)
-        for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
+        for path_to_jsonl, output_path in zip(args.path_to_jsonl_list, args.output_file_list):
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, output_path)
         stop_vllm_server(process_id)
     else:
-        for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
+        for path_to_jsonl, output_path in zip(args.path_to_jsonl_list, args.output_file_list):
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, output_path)
