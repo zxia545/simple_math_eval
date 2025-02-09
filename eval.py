@@ -35,7 +35,7 @@ Please do the following:
     
 
 
-def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=0.7, threads=10):
+def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=0.7, threads=10, output_file=None):
     def process_data(data_item, api_base, model_name, max_tokens=256, temperature=0.7):
         reference_answer = data_item.get("answer")
         llm_answer = data_item.get("llm_answer")
@@ -60,7 +60,9 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
     total_counter = len(data_list)
     file_name = os.path.splitext(os.path.basename(path_to_jsonl))[0]
     output_list = []
-    output_file = os.path.join("eval_results", file_name + "_eval.jsonl")
+    
+    if output_file is None:
+        output_file = os.path.join("eval_results", file_name + "_eval.jsonl")
     
     
     with ThreadPoolExecutor(max_workers=threads) as executor:
@@ -86,6 +88,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=8000, help='Port')
     parser.add_argument('--gpu', type=int, default=1, help='GPU')
     parser.add_argument('--threads', type=int, default=10, help='Threads')
+    parser.add_argument('--output_file', type=str, default=None, help='Output file')
     
     args = parser.parse_args()
     
@@ -93,8 +96,8 @@ if __name__ == "__main__":
     if args.model_path:
         process_id = start_vllm_server(args.model_path, args.model_name, args.port, args.gpu)
         for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads)
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
         stop_vllm_server(process_id)
     else:
         for path_to_jsonl in args.path_to_jsonl_list:
-            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads)
+            eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
