@@ -4,7 +4,7 @@ import json
 from openai import OpenAI
 import argparse
 import os
-import tqdm # Added tqdm for progress visualization
+import tqdm
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -34,7 +34,8 @@ Please do the following:
     - "The reply doesn't contain a clear final answer." """
 
 
-def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=512, temperature=0.2, threads=10, output_file=None): # Increased max_tokens, lowered temp
+# eval_jsonl now takes single paths, looping handled in __main__
+def eval_jsonl(path_to_jsonl, output_file, api_base, model_name, max_tokens=512, temperature=0.2, threads=10):
     def process_data(data_item, api_base, model_name, max_tokens=512, temperature=0.2):
         # --- Updated Key Extraction ---
         reference_output = data_item.get("output") # Ground truth solution/answer
@@ -45,26 +46,18 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=512, temperature=
 
         # Basic validation
         if not all([reference_output, llm_answer, problem_input]):
-             print(f"[Warning] Skipping item idx {idx} due to missing required fields (input, output, or llm_answer).")
-             # Create a result indicating the skip
+             print(f"[Warning] Skipping item idx {idx} in {os.path.basename(path_to_jsonl)} due to missing required fields (input, output, or llm_answer).")
              return {
-                 "idx": idx,
-                 "input": problem_input or "Missing",
-                 "llm_answer": llm_answer or "Missing",
+                 "idx": idx, "input": problem_input or "Missing", "llm_answer": llm_answer or "Missing",
                  "reference_output": reference_output or "Missing",
-                 "eval_feedback": "[Error] Missing required fields for evaluation",
-                 "eval_result": False # Count as incorrect if skipped
+                 "eval_feedback": "[Error] Missing required fields for evaluation", "eval_result": False
              }
 
         if "[LLM Error]" in llm_answer or "[Error]" in llm_answer:
-             print(f"[Warning] Skipping evaluation for item idx {idx} due to generation error: {llm_answer}")
+             print(f"[Info] Skipping evaluation for item idx {idx} in {os.path.basename(path_to_jsonl)} due to prior generation error: {llm_answer}")
              return {
-                 "idx": idx,
-                 "input": problem_input,
-                 "llm_answer": llm_answer,
-                 "reference_output": reference_output,
-                 "eval_feedback": "[Skipped] LLM generation failed",
-                 "eval_result": False # Count as incorrect if generation failed
+                 "idx": idx, "input": problem_input, "llm_answer": llm_answer, "reference_output": reference_output,
+                 "eval_feedback": "[Skipped] LLM generation failed", "eval_result": False
              }
 
         # --- Updated User Prompt ---
@@ -81,103 +74,161 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=512, temperature=
         eval_feedback = "[Error] Evaluation failed"
         is_correct = False
         try:
-            eval_feedback = chat_completion(api_base=api_base, model_name=model_name, messages=this_message, max_tokens=max_tokens, temperature=temperature)
-            is_correct = scorer(eval_feedback)
+            # Add retries for robustness
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    eval_feedback = chat_completion(api_base=api_base, model_name=model_name, messages=this_message, max_tokens=max_tokens, temperature=temperature)
+                    is_correct = scorer(eval_feedback)
+                    break # Success
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise e # Raise exception on last retry
+                    print(f"[Warning] Evaluation API call attempt {attempt+1}/{max_retries} failed for idx {idx} in {os.path.basename(path_to_jsonl)}: {e}. Retrying...")
+                    time.sleep(2 ** attempt) # Exponential backoff
         except Exception as e:
-            print(f"[Error] Evaluation API call failed for idx {idx}: {e}")
+            print(f"[Error] Evaluation API call failed permanently for idx {idx} in {os.path.basename(path_to_jsonl)}: {e}")
             eval_feedback = f"[Eval Error] {e}"
-            is_correct = False # Count as incorrect if evaluation fails
+            is_correct = False
 
         # --- Updated Return Dictionary ---
         return {
-            "idx": idx,
-            "input": problem_input,
-            "llm_answer": llm_answer,
-            "reference_output": reference_output,
-            "eval_feedback": eval_feedback,
-            "eval_result": is_correct
+            "idx": idx, "input": problem_input, "llm_answer": llm_answer, "reference_output": reference_output,
+            "eval_feedback": eval_feedback, "eval_result": is_correct
             }
         # --- End Updated Return Dictionary ---
 
     win_counter = 0
-    data_list = list(read_jsonl(path_to_jsonl)) # Read all data into a list
-    total_counter = len(data_list)
-    processed_counter = 0
-    file_name = os.path.splitext(os.path.basename(path_to_jsonl))[0]
     output_list = []
+    processed_counter = 0
+    data_list = []
+    try:
+        data_list = list(read_jsonl(path_to_jsonl)) # Read all data into a list
+    except FileNotFoundError:
+        print(f"[Error] Input file not found: {path_to_jsonl}")
+        return # Skip this file
+    except Exception as e:
+        print(f"[Error] Failed to read or parse {path_to_jsonl}: {e}")
+        return # Skip this file
 
-    if output_file is None:
-        # Ensure eval_results directory exists
-        os.makedirs("eval_results", exist_ok=True)
-        output_file = os.path.join("eval_results", file_name + "_eval.jsonl")
-
+    total_counter = len(data_list)
+    if total_counter == 0:
+        print(f"[Info] No data found in {path_to_jsonl}. Skipping.")
+        # Create the output file anyway, but empty
+        write_jsonl(output_file, [])
+        print(f'[Info] Empty evaluation results file created at {output_file}')
+        return
 
     with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = [executor.submit(process_data, data_item, api_base, model_name, max_tokens, temperature) for data_item in data_list]
-        # Use tqdm for progress
-        for future in tqdm.tqdm(futures, total=total_counter, desc=f"Evaluating {path_to_jsonl}"):
+        for future in tqdm.tqdm(futures, total=total_counter, desc=f"Evaluating {os.path.basename(path_to_jsonl)}"):
             try:
                 result_json = future.result()
                 output_list.append(result_json)
-                # Check if the result wasn't skipped before counting towards accuracy
                 if result_json and "eval_result" in result_json and "[Error]" not in result_json.get("eval_feedback", "") and "[Skipped]" not in result_json.get("eval_feedback", ""):
-                     processed_counter += 1 # Count only successfully evaluated items
+                     processed_counter += 1
                      is_correct = result_json.get("eval_result", False)
                      win_counter += int(is_correct)
             except Exception as e:
-                 print(f"[Error] A task failed during evaluation processing: {e}")
+                 print(f"[Error] A task failed during evaluation processing for {os.path.basename(path_to_jsonl)}: {e}")
 
+    # Ensure the output directory exists before writing
+    output_dir = os.path.dirname(output_file)
+    if output_dir: # Check if it's not empty (i.e., not just a filename in the current dir)
+        os.makedirs(output_dir, exist_ok=True)
 
     write_jsonl(output_file, output_list)
-    print(f'[INFO] Evaluation results have been saved to {output_file}')
+    print(f'[INFO] Evaluation results for {os.path.basename(path_to_jsonl)} saved to {output_file}')
     if processed_counter > 0:
         accuracy = (win_counter / processed_counter) * 100
-        print(f'[INFO] Evaluated {processed_counter}/{total_counter} items.')
-        print(f'[INFO] Accuracy on evaluated items: {accuracy:.2f}% ({win_counter}/{processed_counter})')
-    else:
-        print('[INFO] No items were successfully evaluated.')
+        print(f'[INFO]   Evaluated: {processed_counter}/{total_counter} items.')
+        print(f'[INFO]   Accuracy on evaluated items: {accuracy:.2f}% ({win_counter}/{processed_counter})')
+    elif total_counter > 0 :
+         print(f'[INFO]   {total_counter} items found, but none were successfully evaluated (check for errors/skips).')
+    # No need to print if total_counter was 0, already handled.
+    print("-" * 30) # Separator for multiple file outputs
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate LLM answers against reference solutions using another LLM.')
+    parser = argparse.ArgumentParser(description='Evaluate LLM answers against reference solutions using another LLM for one or more files.')
     # Arguments for evaluator LLM
-    parser.add_argument('--eval_api_base', type=str, default="http://localhost:8001/v1", help='API base URL for the EVALUATOR LLM (e.g., https://api.openai.com/v1 or http://localhost:8001/v1).')
-    parser.add_argument('--eval_model_name', type=str, default="eval_model", help='Model name for the EVALUATOR LLM (e.g., gpt-4-turbo).')
-    # Input file (output from gen_math.py)
-    parser.add_argument('--input_jsonl', type=str, required=True, help='Path to the JSONL file containing inputs, reference outputs, and llm_answers.')
-    # Optional: Output file path
-    parser.add_argument('--output_file', type=str, default=None, help='Optional: Path to save the evaluation results JSONL file.')
+    parser.add_argument('--eval_api_base', type=str, required=True, help='API base URL for the EVALUATOR LLM (e.g., https://api.openai.com/v1 or http://localhost:8001/v1).')
+    parser.add_argument('--eval_model_name', type=str, required=True, help='Model name for the EVALUATOR LLM (e.g., gpt-4-turbo).')
+    # Input file list (output from gen_math.py)
+    parser.add_argument('--input_jsonl_list', type=str, nargs='+', required=True, help='Path(s) to the input JSONL file(s) containing inputs, reference outputs, and llm_answers.')
+    # Optional: Output file list
+    parser.add_argument('--output_file_list', type=str, nargs='+', default=None, help='Optional: Path(s) to save the evaluation results JSONL file(s). Must match the number of input files if provided.')
     # Parameters for evaluation call
     parser.add_argument('--max_tokens', type=int, default=512, help='Max tokens for the evaluator LLM response.')
     parser.add_argument('--temperature', type=float, default=0.2, help='Temperature for the evaluator LLM response.')
-    parser.add_argument('--threads', type=int, default=40, help='Number of threads for parallel evaluation calls.')
-    # Optional: If evaluator model needs to be started locally (less common, usually use external like OpenAI)
+    parser.add_argument('--threads', type=int, default=10, help='Number of threads for parallel evaluation calls per file.')
+    # Optional: If evaluator model needs to be started locally
     parser.add_argument('--eval_model_path', type=str, default=None, help='Path to the evaluator model (if hosting locally).')
     parser.add_argument('--eval_port', type=int, default=8001, help='Port for the evaluator model (if hosting locally).')
-    parser.add_argument('--eval_gpu', type=int, default=4, help='GPU(s) for the evaluator model (if hosting locally).')
+    parser.add_argument('--eval_gpu', type=int, default=1, help='GPU(s) for the evaluator model (if hosting locally).')
 
     args = parser.parse_args()
 
-    # Add '/v1' if it's not present in eval_api_base
-    if not args.eval_api_base.endswith('/v1'):
-        original_api_base = args.eval_api_base
-        args.eval_api_base = args.eval_api_base.rstrip('/') + '/v1'
-        print(f"[INFO] Added '/v1' to eval_api_base. Using: {args.eval_api_base}")
+    # --- Input/Output File List Handling ---
+    input_files = args.input_jsonl_list
+    output_files = args.output_file_list
 
-
-    if args.eval_model_path:
-        # Start a local evaluator model server
-        eval_process = None
-        try:
-            eval_process = start_vllm_server(args.eval_model_path, args.eval_model_name, args.eval_port, args.eval_gpu)
-            # Use the local server's API base
-            local_eval_api_base = f"http://localhost:{args.eval_port}/v1"
-            eval_jsonl(args.input_jsonl, local_eval_api_base, args.eval_model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
-        finally:
-             if eval_process:
-                stop_vllm_server(eval_process)
+    if output_files:
+        if len(input_files) != len(output_files):
+            raise ValueError("Error: The number of input files must match the number of output files when --output_file_list is provided.")
     else:
-        # Use the provided (likely external) evaluator API base
-        eval_jsonl(args.input_jsonl, args.eval_api_base, args.eval_model_name, args.max_tokens, args.temperature, args.threads, args.output_file)
+        # Generate default output file names
+        print("[INFO] No output file list provided. Generating default names in 'eval_results/'.")
+        output_files = []
+        output_dir = "eval_results"
+        os.makedirs(output_dir, exist_ok=True) # Ensure base directory exists
+        for input_path in input_files:
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            # Sanitize base_name slightly if it came from gen_math.py output
+            if base_name.endswith('_gen'):
+                 base_name = base_name[:-4]
+            output_files.append(os.path.join(output_dir, f"{base_name}_eval.jsonl"))
+    # --- End File List Handling ---
 
-    print("[INFO] Evaluation script finished.")
+
+    # Add '/v1' if it's not present in eval_api_base (common for local servers)
+    effective_eval_api_base = args.eval_api_base
+    if not effective_eval_api_base.endswith('/v1'):
+        effective_eval_api_base = effective_eval_api_base.rstrip('/') + '/v1'
+        print(f"[INFO] Added '/v1' to eval_api_base. Using: {effective_eval_api_base}")
+
+    eval_process = None
+    try:
+        # --- Start Local Evaluator Model (Optional) ---
+        if args.eval_model_path:
+            print(f"[INFO] Starting local evaluator model {args.eval_model_name} from {args.eval_model_path} on port {args.eval_port}...")
+            eval_process = start_vllm_server(args.eval_model_path, args.eval_model_name, args.eval_port, args.eval_gpu)
+            # Override API base to use the local server
+            effective_eval_api_base = f"http://localhost:{args.eval_port}/v1"
+            print(f"[INFO] Local evaluator model started. Using API base: {effective_eval_api_base}")
+        # --- End Start Local Model ---
+
+        # --- Loop Through Files ---
+        print(f"[INFO] Starting evaluation for {len(input_files)} file(s)...")
+        for input_path, output_path in zip(input_files, output_files):
+            print(f"[INFO] Processing: {input_path} -> {output_path}")
+            eval_jsonl(
+                path_to_jsonl=input_path,
+                output_file=output_path,
+                api_base=effective_eval_api_base,
+                model_name=args.eval_model_name,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                threads=args.threads
+            )
+        # --- End Loop ---
+
+    finally:
+        # --- Stop Local Evaluator Model (If Started) ---
+        if eval_process:
+            print(f"[INFO] Stopping local evaluator model on port {args.eval_port}...")
+            stop_vllm_server(eval_process)
+            print("[INFO] Local evaluator model stopped.")
+        # --- End Stop Local Model ---
+
+    print("[INFO] Evaluation script finished for all files.")
