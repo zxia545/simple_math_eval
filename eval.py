@@ -155,7 +155,7 @@ if __name__ == "__main__":
     parser.add_argument('--eval_api_base', type=str, required=True, help='API base URL for the EVALUATOR LLM (e.g., https://api.openai.com/v1 or http://localhost:8001/v1).')
     parser.add_argument('--eval_model_name', type=str, required=True, help='Model name for the EVALUATOR LLM (e.g., gpt-4-turbo).')
     # Input file list (output from gen_math.py)
-    parser.add_argument('--input_jsonl_list', type=str, nargs='+', required=True, help='Path(s) to the input JSONL file(s) containing inputs, reference outputs, and llm_answers.')
+    parser.add_argument('--input_jsonl_list', type=str, required=True, help='Path(s) to the input JSONL file(s) containing inputs, reference outputs, and llm_answers.')
     # Optional: Output file list
     parser.add_argument('--output_file_list', type=str, nargs='+', default=None, help='Optional: Path(s) to save the evaluation results JSONL file(s). Must match the number of input files if provided.')
     # Parameters for evaluation call
@@ -170,7 +170,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # --- Input/Output File List Handling ---
-    input_files = args.input_jsonl_list
+    input_files = args.input_jsonl_list.split(',') if ',' in args.input_jsonl_list else [args.input_jsonl_list]
+    # input_files = args.input_jsonl_list
     output_files = args.output_file_list
 
     if output_files:
