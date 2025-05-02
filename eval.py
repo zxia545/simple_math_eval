@@ -155,9 +155,11 @@ if __name__ == "__main__":
     parser.add_argument('--eval_api_base', type=str, required=True, help='API base URL for the EVALUATOR LLM (e.g., https://api.openai.com/v1 or http://localhost:8001/v1).')
     parser.add_argument('--eval_model_name', type=str, required=True, help='Model name for the EVALUATOR LLM (e.g., gpt-4-turbo).')
     # Input file list (output from gen_math.py)
-    parser.add_argument('--input_jsonl_list', type=str, required=True, help='Path(s) to the input JSONL file(s) containing inputs, reference outputs, and llm_answers.')
+    parser.add_argument('--input_jsonl_list', type=str, default=None, help='Path(s) to the input JSONL file(s) containing inputs, reference outputs, and llm_answers.')
     # Optional: Output file list
     parser.add_argument('--output_file_list', type=str, nargs='+', default=None, help='Optional: Path(s) to save the evaluation results JSONL file(s). Must match the number of input files if provided.')
+    parser.add_argument('--input_folder', type=str, default=None, help='Optional: Folder containing input JSONL files. If provided, --input_jsonl_list is ignored and all JSONL files in the folder are processed.')
+    parser.add_argument('--output_folder', type=str, default=None, help='Optional: Folder to save evaluation results JSONL files. If provided, --output_file_list is ignored and results are saved in this folder with default names.')
     # Parameters for evaluation call
     parser.add_argument('--max_tokens', type=int, default=512, help='Max tokens for the evaluator LLM response.')
     parser.add_argument('--temperature', type=float, default=0.2, help='Temperature for the evaluator LLM response.')
@@ -170,7 +172,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # --- Input/Output File List Handling ---
-    input_files = args.input_jsonl_list.split(',') if ',' in args.input_jsonl_list else [args.input_jsonl_list]
+    if not args.input_folder:
+        input_files = args.input_jsonl_list.split(',') if ',' in args.input_jsonl_list else [args.input_jsonl_list]
+    else:
+        import os
+        input_files = [os.path.join(args.input_folder, f) for f in os.listdir(args.input_folder) if f.endswith('.jsonl')]
     # input_files = args.input_jsonl_list
     output_files = args.output_file_list
 
