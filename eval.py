@@ -187,7 +187,10 @@ if __name__ == "__main__":
         # Generate default output file names
         print("[INFO] No output file list provided. Generating default names in 'eval_results/'.")
         output_files = []
-        output_dir = "eval_results"
+        if args.output_folder:
+            output_dir = args.output_folder
+        else:
+            output_dir = "eval_results"
         os.makedirs(output_dir, exist_ok=True) # Ensure base directory exists
         for input_path in input_files:
             base_name = os.path.splitext(os.path.basename(input_path))[0]
