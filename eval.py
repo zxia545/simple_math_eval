@@ -41,7 +41,7 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
         llm_answer = data_item.get("llm_answer")
         question = data_item.get("question")
         
-        user_prompt  = "Problem: " + question + f"\n\nReply: {llm_answer}\n\nGround truth answer: " + reference_answer
+        user_prompt  = "Problem: " + str(question) + f"\n\nReply: {llm_answer}\n\nGround truth answer: " + str(reference_answer)
 
         this_message = [
             {"role": "system", "content": check_sys_msg},
@@ -57,7 +57,7 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
     win_counter = 0
     
     data_list = read_jsonl(path_to_jsonl)
-    total_counter = len(data_list)
+    total_counter = 0
     file_name = os.path.splitext(os.path.basename(path_to_jsonl))[0]
     output_list = []
     
@@ -69,6 +69,7 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
         futures = [executor.submit(process_data, data_item, api_base, model_name, max_tokens, temperature) for data_item in data_list]
         for i, future in enumerate(futures, start=1):
             result_json = future.result()
+            total_counter += 1
             is_correct = result_json.get("eval_result")
             win_counter += int(is_correct)
             output_list.append(result_json)
@@ -78,26 +79,55 @@ def eval_jsonl(path_to_jsonl, api_base, model_name, max_tokens=256, temperature=
     print(f'[INFO] Acc: {win_counter/total_counter*100}% ')
     
 if __name__ == "__main__":
+    # INPUT_LIST=["./gen_output/qwen-ori-math-500-gen.jsonl", "./gen_output/qwen-math-trained-math-500-gen.jsonl",  "./gen_output/qwen-type2-iter1-math-500-gen.jsonl", "./gen_output/qwen-ori-deepmind-gen.jsonl", "./gen_output/qwen-math-trained-deepmind-gen.jsonl",  "./gen_output/qwen-type2-iter1-deepmind-gen.jsonl"]
+    # OUTPUT_LIST=["./eval_output/qwen-ori-math-500-gen.jsonl",  "./eval_output/qwen-math-trained-math-500-gen.jsonl", "./eval_output/qwen-type2-iter1-math-500-gen.jsonl", "./eval_output/qwen-ori-deepmind-gen.jsonl",  "./eval_output/qwen-math-trained-deepmind-gen.jsonl", "./eval_output/qwen-type2-iter1-deepmind-gen.jsonl"]
     parser = argparse.ArgumentParser(description='Evaluate the LLM on a jsonl file')
     parser.add_argument('--api_base', type=str, default="https://api.openai.com", help='API base URL')
     parser.add_argument('--model_name', type=str, default="text-davinci-003", help='Model name')
-    parser.add_argument('--path_to_jsonl_list', type=list, help='Path to the jsonl file')
+    parser.add_argument('--path_to_jsonl_list',default="./gen_type4", help='Path to the jsonl file or a list of paths')
     parser.add_argument('--max_tokens', type=int, default=256, help='Max tokens')
     parser.add_argument('--temperature', type=float, default=0.7, help='Temperature')
     parser.add_argument('--model_path', type=str, default=None, help='Path to the model')
     parser.add_argument('--port', type=int, default=8000, help='Port')
     parser.add_argument('--gpu', type=int, default=1, help='GPU')
     parser.add_argument('--threads', type=int, default=10, help='Threads')
-    parser.add_argument('--output_file_list', type=list, default=None, help='Output file')
+    parser.add_argument('--output_file_list', default="./eval_type4", help='Output file or a list of output files')
     
     args = parser.parse_args()
-    
+    os.makedirs(args.output_file_list, exist_ok=True)
+    # Convert path_to_jsonl_list and output_file_list to lists if they are not already
+    # if isinstance(args.path_to_jsonl_list, str):
+    #     args.path_to_jsonl_list = [args.path_to_jsonl_list]
+    # if isinstance(args.output_file_list, str):
+    #     args.output_file_list = [args.output_file_list]
     
     if args.model_path:
         process_id = start_vllm_server(args.model_path, args.model_name, args.port, args.gpu)
-        for path_to_jsonl, output_path in zip(args.path_to_jsonl_list, args.output_file_list):
+        files = os.listdir(args.path_to_jsonl_list)
+        for file in files:
+            if not file.endswith(".jsonl"):
+                continue
+            path_to_jsonl = os.path.join(args.path_to_jsonl_list, file)
+            output_path = os.path.join(args.output_file_list, file)
+            if os.path.exists(output_path):
+                print(f'By pass {output_path}')
+                continue
             eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, output_path)
         stop_vllm_server(process_id)
     else:
-        for path_to_jsonl, output_path in zip(args.path_to_jsonl_list, args.output_file_list):
+        # get jsonl files in input directory
+        files = os.listdir(args.path_to_jsonl_list)
+        for file in files:
+            if not file.endswith(".jsonl"):
+                continue
+            path_to_jsonl = os.path.join(args.path_to_jsonl_list, file)
+            output_path = os.path.join(args.output_file_list, file)
+            if os.path.exists(output_path):
+                print(f'By pass {output_path}')
+                continue
             eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, output_path)
+        
+        # for path_to_jsonl, output_path in zip(args.path_to_jsonl_list, args.output_file_list):
+        #     print(path_to_jsonl)
+        #     print(output_path)
+        #     eval_jsonl(path_to_jsonl, args.api_base, args.model_name, args.max_tokens, args.temperature, args.threads, output_path)
